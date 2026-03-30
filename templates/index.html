@@ -231,11 +231,16 @@
 
   <script>
     const METHODS = [
-      { id: "direct",         label: "Googlebot UA" },
-      { id: "google_referer", label: "Referer Google" },
-      { id: "12ft",           label: "12ft.io" },
-      { id: "google_cache",   label: "Google Cache" },
-      { id: "wayback",        label: "Wayback Machine" },
+      { id: "googlebot",    label: "Googlebot" },
+      { id: "desktop",      label: "Desktop+Google" },
+      { id: "mobile",       label: "Mobile UA" },
+      { id: "amp",          label: "AMP" },
+      { id: "print",        label: "Print" },
+      { id: "archive_ph",   label: "archive.ph" },
+      { id: "12ft",         label: "12ft.io" },
+      { id: "google_cache", label: "Google Cache" },
+      { id: "wayback",      label: "Wayback" },
+      { id: "partial",      label: "Preview" },
     ];
 
     function setStatus(type, html) {
@@ -273,14 +278,22 @@
         });
         const data = await res.json();
 
+        const triedSet = new Set(data.result?.tried || data.tried || []);
+        const winMethod = data.result?.method;
         document.getElementById("methodsList").innerHTML = METHODS.map(m => {
-          const cls = data.success && data.result?.method === m.id ? "ok" : "fail";
+          let cls = "pending";
+          if (m.id === winMethod) cls = "ok";
+          else if (triedSet.has(m.id)) cls = "fail";
           return `<span class="method-badge ${cls}">${m.label}</span>`;
         }).join("");
 
         if (data.success) {
-          setStatus("success", `Contenido obtenido via <strong>${data.result.source}</strong>`);
-          document.getElementById("sourceLabel").textContent = data.result.source;
+          const isPartial = data.result.partial;
+          const statusMsg = isPartial
+            ? `Solo preview disponible via <strong>${data.result.source}</strong> — el informe completo requiere suscripción`
+            : `Contenido completo obtenido via <strong>${data.result.source}</strong>`;
+          setStatus(isPartial ? "error" : "success", statusMsg);
+          document.getElementById("sourceLabel").textContent = data.result.source + (isPartial ? " (parcial)" : "");
 
           const archLink = document.getElementById("archiveLink");
           const archUrl = data.result.archive_url || data.result.proxy_url || data.result.cache_url;
