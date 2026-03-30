@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lector de Noticias - Bypass Paywall</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      width: 100%;
+      background: #1e293b;
+      border-bottom: 1px solid #334155;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    header h1 { font-size: 1.25rem; color: #f8fafc; }
+    header span { font-size: 0.75rem; color: #64748b; }
+
+    .main {
+      width: 100%;
+      max-width: 900px;
+      padding: 2rem 1rem;
+    }
+
+    .search-box {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .search-box label {
+      display: block;
+      font-size: 0.875rem;
+      color: #94a3b8;
+      margin-bottom: 0.5rem;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    .input-row input {
+      flex: 1;
+      background: #0f172a;
+      border: 1px solid #475569;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      color: #f1f5f9;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .input-row input:focus { border-color: #6366f1; }
+    .input-row input::placeholder { color: #475569; }
+
+    .input-row button {
+      background: #6366f1;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 0.75rem 1.5rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.2s;
+    }
+
+    .input-row button:hover { background: #4f46e5; }
+    .input-row button:disabled { background: #334155; cursor: not-allowed; }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      font-size: 0.875rem;
+    }
+
+    .status.loading { background: #1e3a5f; color: #93c5fd; border: 1px solid #1d4ed8; }
+    .status.success { background: #14532d; color: #86efac; border: 1px solid #166534; }
+    .status.error   { background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; }
+    .status.hidden  { display: none; }
+
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid #93c5fd;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .methods-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+
+    .method-badge {
+      font-size: 0.7rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 99px;
+      border: 1px solid;
+    }
+
+    .method-badge.pending  { background: #1e293b; border-color: #475569; color: #94a3b8; }
+    .method-badge.running  { background: #1e3a5f; border-color: #1d4ed8; color: #93c5fd; }
+    .method-badge.ok       { background: #14532d; border-color: #166534; color: #86efac; }
+    .method-badge.fail     { background: #1c1917; border-color: #44403c; color: #78716c; }
+
+    .alternatives {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .alternatives h3 { font-size: 0.9rem; color: #94a3b8; margin-bottom: 0.75rem; }
+
+    .alt-links { display: flex; flex-direction: column; gap: 0.5rem; }
+
+    .alt-links a {
+      color: #818cf8;
+      font-size: 0.85rem;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .alt-links a:hover { color: #a5b4fc; text-decoration: underline; }
+
+    .source-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px 8px 0 0;
+      padding: 0.6rem 1rem;
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+
+    .source-bar strong { color: #86efac; }
+
+    .content-frame {
+      background: #fff;
+      border: 1px solid #334155;
+      border-top: none;
+      border-radius: 0 0 12px 12px;
+      width: 100%;
+      min-height: 600px;
+      overflow: auto;
+      padding: 2rem;
+      color: #1e293b;
+      font-size: 1rem;
+      line-height: 1.7;
+    }
+
+    .content-frame img { max-width: 100%; height: auto; }
+    .content-frame a { color: #4f46e5; }
+    .content-frame h1, .content-frame h2, .content-frame h3 {
+      margin: 1rem 0 0.5rem;
+      color: #0f172a;
+    }
+    .content-frame p { margin-bottom: 0.75rem; }
+    .content-frame figure { margin: 1rem 0; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lector sin Paywall</h1>
+    <span>Accede a noticias e informes de pago mediante métodos alternativos</span>
+  </header>
+
+  <div class="main">
+    <div class="search-box">
+      <label for="urlInput">Introduce la URL del articulo o informe:</label>
+      <div class="input-row">
+        <input type="url" id="urlInput"
+               placeholder="https://www.alimarket.es/nonfood/informe/422515/..."
+               value="https://www.alimarket.es/nonfood/informe/422515/analisis-2026-del-sector-de-perfumeria-e-higiene-en-la-distribucion/informe-completo">
+        <button id="goBtn" onclick="bypass()">Abrir</button>
+      </div>
+      <div class="methods-list" id="methodsList"></div>
+    </div>
+
+    <div id="statusBar" class="status hidden"></div>
+
+    <div id="alternativesBox" class="alternatives hidden">
+      <h3>No se pudo obtener el contenido automaticamente. Prueba manualmente:</h3>
+      <div class="alt-links" id="altLinks"></div>
+    </div>
+
+    <div id="resultBox" class="hidden">
+      <div class="source-bar">
+        <span>Fuente: <strong id="sourceLabel"></strong></span>
+        <span id="archiveLink"></span>
+      </div>
+      <div class="content-frame" id="contentFrame"></div>
+    </div>
+  </div>
+
+  <script>
+    const METHODS = [
+      { id: "direct",         label: "Googlebot UA" },
+      { id: "google_referer", label: "Referer Google" },
+      { id: "12ft",           label: "12ft.io" },
+      { id: "google_cache",   label: "Google Cache" },
+      { id: "wayback",        label: "Wayback Machine" },
+    ];
+
+    function setStatus(type, html) {
+      const bar = document.getElementById("statusBar");
+      bar.className = `status ${type}`;
+      bar.innerHTML = html;
+    }
+
+    function renderMethodBadges(activeIndex) {
+      const list = document.getElementById("methodsList");
+      list.innerHTML = METHODS.map((m, i) => {
+        let cls = i < activeIndex ? "fail" : i === activeIndex ? "running" : "pending";
+        return `<span class="method-badge ${cls}">${m.label}</span>`;
+      }).join("");
+    }
+
+    async function bypass() {
+      const url = document.getElementById("urlInput").value.trim();
+      if (!url) return;
+
+      document.getElementById("goBtn").disabled = true;
+      document.getElementById("resultBox").classList.add("hidden");
+      document.getElementById("alternativesBox").classList.add("hidden");
+      document.getElementById("methodsList").innerHTML = METHODS.map(m =>
+        `<span class="method-badge pending">${m.label}</span>`
+      ).join("");
+
+      setStatus("loading", '<div class="spinner"></div> Intentando acceder al contenido...');
+
+      try {
+        const res = await fetch("/bypass", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+
+        document.getElementById("methodsList").innerHTML = METHODS.map(m => {
+          const cls = data.success && data.result?.method === m.id ? "ok" : "fail";
+          return `<span class="method-badge ${cls}">${m.label}</span>`;
+        }).join("");
+
+        if (data.success) {
+          setStatus("success", `Contenido obtenido via <strong>${data.result.source}</strong>`);
+          document.getElementById("sourceLabel").textContent = data.result.source;
+
+          const archLink = document.getElementById("archiveLink");
+          const archUrl = data.result.archive_url || data.result.proxy_url || data.result.cache_url;
+          archLink.innerHTML = archUrl
+            ? `<a href="${archUrl}" target="_blank" style="color:#818cf8;font-size:0.8rem;">Ver original archivado</a>`
+            : "";
+
+          document.getElementById("contentFrame").innerHTML = data.result.content;
+          document.getElementById("resultBox").classList.remove("hidden");
+        } else {
+          setStatus("error", "No se pudo acceder automaticamente. Prueba los enlaces alternativos.");
+          const altLinks = document.getElementById("altLinks");
+          const icons = { wayback_search: "archive.org", "12ft_link": "12ft.io", google_cache: "Google Cache", archive_today: "archive.ph" };
+          altLinks.innerHTML = Object.entries(data.alternatives || {}).map(([k, v]) =>
+            `<a href="${v}" target="_blank">&#x2192; ${icons[k] || k}</a>`
+          ).join("");
+          document.getElementById("alternativesBox").classList.remove("hidden");
+        }
+      } catch (err) {
+        setStatus("error", "Error de red: " + err.message);
+      }
+
+      document.getElementById("goBtn").disabled = false;
+    }
+
+    document.getElementById("urlInput").addEventListener("keydown", e => {
+      if (e.key === "Enter") bypass();
+    });
+  </script>
+</body>
+</html>
