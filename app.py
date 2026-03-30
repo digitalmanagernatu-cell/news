@@ -250,12 +250,11 @@ def try_wayback_machine(url: str) -> dict:
 
 def try_playwright(url: str) -> dict:
     """
-    Navegador headless real: carga la página, intercepta APIs, manipula DOM.
-    Técnicas:
-      1. Elimina overlays/paywalls del DOM con JS
-      2. Desactiva event listeners que ocultan contenido
-      3. Busca llamadas XHR/fetch que cargan el contenido
-      4. Fuerza visibilidad de elementos ocultos
+    Navegador headless real con múltiples técnicas de bypass:
+      1. Intercepta todas las llamadas de red (busca API de contenido)
+      2. Manipula localStorage/sessionStorage/cookies para simular suscripción
+      3. Elimina overlays y fuerza visibilidad del DOM
+      4. Recarga tras manipulación para ver si el servidor responde diferente
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -263,30 +262,37 @@ def try_playwright(url: str) -> dict:
         return {"success": False}
 
     api_responses = []
+    all_requests = []
 
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=[
                 "--no-sandbox", "--disable-setuid-sandbox",
                 "--disable-blink-features=AutomationControlled",
+                "--disable-web-security",
             ])
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                extra_http_headers={"Referer": "https://www.google.es/"},
+                extra_http_headers={
+                    "Referer": "https://www.google.es/",
+                    "Accept-Language": "es-ES,es;q=0.9",
+                },
                 viewport={"width": 1280, "height": 900},
             )
 
-            # Interceptar respuestas de red que puedan contener el artículo
             def handle_response(response):
                 ct = response.headers.get("content-type", "")
-                if "json" in ct or "text" in ct:
+                url_r = response.url
+                all_requests.append({"url": url_r, "status": response.status})
+                if "json" in ct or ("text" in ct and response.status == 200):
                     try:
                         body = response.body()
-                        if len(body) > 1000:
+                        if len(body) > 800:
                             api_responses.append({
-                                "url": response.url,
+                                "url": url_r,
                                 "status": response.status,
+                                "ct": ct,
                                 "body": body.decode("utf-8", errors="ignore"),
                             })
                     except Exception:
@@ -295,81 +301,160 @@ def try_playwright(url: str) -> dict:
             page = context.new_page()
             page.on("response", handle_response)
 
+            # --- CARGA INICIAL ---
             page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(2000)
 
-            # Esperar a que cargue el contenido dinámico
-            page.wait_for_timeout(3000)
+            # --- PASO 1: Inspeccionar localStorage/sessionStorage del sitio ---
+            storage_data = page.evaluate("""() => {
+                const ls = {}, ss = {};
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    ls[k] = localStorage.getItem(k);
+                }
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const k = sessionStorage.key(i);
+                    ss[k] = sessionStorage.getItem(k);
+                }
+                return { localStorage: ls, sessionStorage: ss };
+            }""")
 
-            # Manipulaciones DOM para revelar contenido oculto
+            # --- PASO 2: Inyectar valores de suscripción en localStorage ---
             page.evaluate("""() => {
-                // Eliminar overlays y modales de pago
+                // Claves comunes que los sitios usan para controlar el acceso
+                const subscriptionKeys = {
+                    'subscriber': 'true', 'isSubscriber': 'true',
+                    'subscription': 'active', 'subscriptionStatus': 'active',
+                    'userType': 'subscriber', 'user_type': 'premium',
+                    'isPremium': 'true', 'premium': 'true',
+                    'hasAccess': 'true', 'access': 'full',
+                    'suscriptor': 'true', 'suscripcion': 'activa',
+                    'logged': 'true', 'loggedIn': 'true',
+                    'authenticated': 'true', 'auth': '1',
+                    'role': 'subscriber', 'plan': 'premium',
+                    'metered_paywall_counter': '0',
+                    'article_count': '0', 'articlesRead': '0',
+                    'piano_access': 'true',
+                    'paywall_bypass': 'true',
+                };
+                Object.entries(subscriptionKeys).forEach(([k, v]) => {
+                    try { localStorage.setItem(k, v); } catch(e) {}
+                    try { sessionStorage.setItem(k, v); } catch(e) {}
+                });
+                // También en cookies
+                Object.entries(subscriptionKeys).forEach(([k, v]) => {
+                    document.cookie = `${k}=${v}; path=/; max-age=86400`;
+                });
+            }""")
+
+            # --- PASO 3: Recargar para que el sitio lea los nuevos valores ---
+            page.reload(wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(2000)
+
+            # --- PASO 4: Manipulaciones DOM agresivas ---
+            page.evaluate("""() => {
                 const removeSelectors = [
                     '[class*="paywall"]', '[id*="paywall"]',
                     '[class*="modal"]', '[id*="modal"]',
                     '[class*="overlay"]', '[id*="overlay"]',
                     '[class*="suscri"]', '[class*="subscri"]',
                     '[class*="premium"]', '[class*="locked"]',
-                    '[class*="cookie"]', '[class*="banner"]',
-                    'dialog', '.backdrop',
+                    '[class*="cookie"]', '[class*="gate"]',
+                    '[class*="wall"]', '[class*="block"]',
+                    'dialog',
                 ];
                 removeSelectors.forEach(sel => {
-                    document.querySelectorAll(sel).forEach(el => el.remove());
+                    try { document.querySelectorAll(sel).forEach(el => el.remove()); } catch(e) {}
                 });
 
-                // Forzar visibilidad de todo el contenido
+                // Forzar visibilidad
                 document.querySelectorAll('*').forEach(el => {
-                    const style = window.getComputedStyle(el);
-                    if (style.filter && style.filter.includes('blur')) {
-                        el.style.filter = 'none';
-                    }
-                    if (style.overflow === 'hidden' && el.scrollHeight > 300) {
-                        el.style.overflow = 'visible';
-                        el.style.maxHeight = 'none';
-                    }
-                    if (style.webkitMaskImage || style.maskImage) {
-                        el.style.webkitMaskImage = 'none';
-                        el.style.maskImage = 'none';
-                    }
+                    try {
+                        const s = window.getComputedStyle(el);
+                        if (s.filter && s.filter.includes('blur'))    el.style.filter = 'none';
+                        if (s.webkitMaskImage && s.webkitMaskImage !== 'none') el.style.webkitMaskImage = 'none';
+                        if (s.maskImage && s.maskImage !== 'none')    el.style.maskImage = 'none';
+                        if (s.overflow === 'hidden' && el.scrollHeight > 500) {
+                            el.style.overflow = 'visible';
+                            el.style.maxHeight = 'none';
+                            el.style.height = 'auto';
+                        }
+                        if (s.display === 'none' && el.className && (
+                            el.className.toString().includes('content') ||
+                            el.className.toString().includes('texto') ||
+                            el.className.toString().includes('body') ||
+                            el.className.toString().includes('article')
+                        )) {
+                            el.style.display = 'block';
+                        }
+                    } catch(e) {}
                 });
-
-                // Desactivar bloqueo de scroll/selección
-                document.body.style.overflow = 'auto';
-                document.documentElement.style.overflow = 'auto';
-                document.body.onscroll = null;
-                window.onscroll = null;
+                document.body.style.overflow = 'visible';
             }""")
 
             page.wait_for_timeout(1000)
-            html = page.content()
-            browser.close()
+            html_after = page.content()
 
-            soup = BeautifulSoup(html, "html.parser")
-
-            # Verificar si hay contenido real en los XHR capturados
-            for resp in api_responses:
+            # --- PASO 5: Buscar contenido en respuestas de API ---
+            import json
+            for resp in sorted(api_responses, key=lambda x: -len(x["body"])):
                 body = resp["body"]
-                if len(body) > 2000 and any(k in body for k in ["informe", "content", "texto", "body", "html"]):
-                    # Intentar extraer HTML del JSON
-                    import json
+                # Buscar JSON con contenido de artículo
+                if len(body) > 2000:
                     try:
                         data = json.loads(body)
-                        content_str = str(data)
-                        if len(content_str) > 3000:
-                            return {
-                                "success": True,
-                                "html": f"<div class='api-content'><pre>{content_str[:50000]}</pre></div>",
-                                "source": f"API intercept: {resp['url'][:80]}",
-                            }
+                        flat = json.dumps(data, ensure_ascii=False)
+                        # Señales de que esto es contenido del artículo
+                        if any(k in flat.lower() for k in ["informe", "perfumeria", "higiene", "contenido", "texto", "html", "body"]):
+                            if len(flat) > 3000:
+                                return {
+                                    "success": True,
+                                    "html": f"""
+                                        <div style='padding:1rem;background:#e8f5e9;border:2px solid #4caf50;border-radius:8px;margin-bottom:1rem'>
+                                            <strong>Contenido obtenido via API:</strong> {resp['url'][:100]}
+                                        </div>
+                                        <pre style='white-space:pre-wrap;word-break:break-word'>{flat[:60000]}</pre>
+                                    """,
+                                    "source": f"API interceptada: {resp['url'][:60]}",
+                                }
                     except Exception:
                         pass
 
-            if _is_full_content(html):
-                return {"success": True, "html": html, "source": "Navegador headless (Playwright)"}
+            soup_after = BeautifulSoup(html_after, "html.parser")
+            if _is_full_content(html_after):
+                return {
+                    "success": True,
+                    "html": html_after,
+                    "source": "Headless + localStorage bypass",
+                }
 
-    except Exception:
-        pass
+            # --- PASO 6: Devolver diagnóstico detallado ---
+            api_log = "\n".join([
+                f"• [{r['status']}] {r['url'][:120]}"
+                for r in all_requests[-30:]
+            ])
+            storage_info = f"localStorage: {list(storage_data.get('localStorage', {}).keys())}"
 
-    return {"success": False}
+            # Construir informe de debug + preview limpio
+            debug_html = f"""
+            <div style='background:#1e293b;color:#94a3b8;padding:1rem;border-radius:8px;margin-bottom:1rem;font-size:0.8rem;font-family:monospace'>
+                <strong style='color:#e2e8f0'>Diagnóstico del sitio</strong><br><br>
+                <strong>Storage inicial:</strong> {storage_info}<br><br>
+                <strong>Últimas peticiones de red ({len(all_requests)} total):</strong><br>
+                <pre style='margin:0.5rem 0;overflow:auto'>{api_log}</pre>
+            </div>
+            """
+            page_content = clean_html(html_after, url, aggressive=True)
+            browser.close()
+            return {
+                "success": True,
+                "html": debug_html + page_content,
+                "source": "Headless (paywall server-side — diagnóstico incluido)",
+                "partial": True,
+            }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def try_partial(url: str) -> dict:
