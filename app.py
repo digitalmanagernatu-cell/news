@@ -248,6 +248,130 @@ def try_wayback_machine(url: str) -> dict:
     return {"success": False}
 
 
+def try_playwright(url: str) -> dict:
+    """
+    Navegador headless real: carga la página, intercepta APIs, manipula DOM.
+    Técnicas:
+      1. Elimina overlays/paywalls del DOM con JS
+      2. Desactiva event listeners que ocultan contenido
+      3. Busca llamadas XHR/fetch que cargan el contenido
+      4. Fuerza visibilidad de elementos ocultos
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"success": False}
+
+    api_responses = []
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=[
+                "--no-sandbox", "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+            ])
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                extra_http_headers={"Referer": "https://www.google.es/"},
+                viewport={"width": 1280, "height": 900},
+            )
+
+            # Interceptar respuestas de red que puedan contener el artículo
+            def handle_response(response):
+                ct = response.headers.get("content-type", "")
+                if "json" in ct or "text" in ct:
+                    try:
+                        body = response.body()
+                        if len(body) > 1000:
+                            api_responses.append({
+                                "url": response.url,
+                                "status": response.status,
+                                "body": body.decode("utf-8", errors="ignore"),
+                            })
+                    except Exception:
+                        pass
+
+            page = context.new_page()
+            page.on("response", handle_response)
+
+            page.goto(url, wait_until="networkidle", timeout=30000)
+
+            # Esperar a que cargue el contenido dinámico
+            page.wait_for_timeout(3000)
+
+            # Manipulaciones DOM para revelar contenido oculto
+            page.evaluate("""() => {
+                // Eliminar overlays y modales de pago
+                const removeSelectors = [
+                    '[class*="paywall"]', '[id*="paywall"]',
+                    '[class*="modal"]', '[id*="modal"]',
+                    '[class*="overlay"]', '[id*="overlay"]',
+                    '[class*="suscri"]', '[class*="subscri"]',
+                    '[class*="premium"]', '[class*="locked"]',
+                    '[class*="cookie"]', '[class*="banner"]',
+                    'dialog', '.backdrop',
+                ];
+                removeSelectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => el.remove());
+                });
+
+                // Forzar visibilidad de todo el contenido
+                document.querySelectorAll('*').forEach(el => {
+                    const style = window.getComputedStyle(el);
+                    if (style.filter && style.filter.includes('blur')) {
+                        el.style.filter = 'none';
+                    }
+                    if (style.overflow === 'hidden' && el.scrollHeight > 300) {
+                        el.style.overflow = 'visible';
+                        el.style.maxHeight = 'none';
+                    }
+                    if (style.webkitMaskImage || style.maskImage) {
+                        el.style.webkitMaskImage = 'none';
+                        el.style.maskImage = 'none';
+                    }
+                });
+
+                // Desactivar bloqueo de scroll/selección
+                document.body.style.overflow = 'auto';
+                document.documentElement.style.overflow = 'auto';
+                document.body.onscroll = null;
+                window.onscroll = null;
+            }""")
+
+            page.wait_for_timeout(1000)
+            html = page.content()
+            browser.close()
+
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Verificar si hay contenido real en los XHR capturados
+            for resp in api_responses:
+                body = resp["body"]
+                if len(body) > 2000 and any(k in body for k in ["informe", "content", "texto", "body", "html"]):
+                    # Intentar extraer HTML del JSON
+                    import json
+                    try:
+                        data = json.loads(body)
+                        content_str = str(data)
+                        if len(content_str) > 3000:
+                            return {
+                                "success": True,
+                                "html": f"<div class='api-content'><pre>{content_str[:50000]}</pre></div>",
+                                "source": f"API intercept: {resp['url'][:80]}",
+                            }
+                    except Exception:
+                        pass
+
+            if _is_full_content(html):
+                return {"success": True, "html": html, "source": "Navegador headless (Playwright)"}
+
+    except Exception:
+        pass
+
+    return {"success": False}
+
+
 def try_partial(url: str) -> dict:
     """Último recurso: devuelve lo que hay aunque sea preview, limpiando bien el HTML."""
     for headers in [GOOGLEBOT, DESKTOP, MOBILE]:
@@ -267,6 +391,7 @@ METHODS = [
     ("12ft",            try_12ft),
     ("google_cache",    try_google_cache),
     ("wayback",         try_wayback_machine),
+    ("playwright",      try_playwright),
     ("partial",         try_partial),
 ]
 
